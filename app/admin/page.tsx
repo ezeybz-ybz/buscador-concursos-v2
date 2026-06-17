@@ -340,7 +340,8 @@ export default function AdminPage() {
         <h2 className="text-sm font-bold mb-1 text-slate-600">🤖 Monitoreo automático con IA</h2>
         <p className="text-xs text-slate-400 mb-4">
           Agregá páginas para que se revisen automáticamente todos los días y se carguen solas los
-          concursos nuevos que encuentre.
+          concursos nuevos que encuentre. Si una publicación solo tiene un link (a un comunicado,
+          PDF o Google Doc), el sistema entra también ahí para leer el contenido completo.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2 mb-4">
