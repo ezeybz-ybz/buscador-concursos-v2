@@ -20,18 +20,27 @@ function htmlATexto(html: string): string {
 }
 
 // ----------------------------------------------------------------
-// Encuentra URLs dentro de un texto/HTML crudo.
-// Prioriza dominios que suelen contener el comunicado real
-// (gobierno, Google Docs/Drive), y descarta los que casi nunca
-// tienen info útil (redes sociales, imágenes, Telegram interno).
+// Encuentra URLs dentro de un texto/HTML crudo, junto con la fecha
+// de publicación cuando se puede determinar.
+//
+// Caso especial: páginas de Telegram (t.me/s/...) tienen cada mensaje
+// envuelto en un bloque con un atributo datetime="YYYY-MM-DDTHH:MM:SS"
+// en una etiqueta <time>. Usamos eso para saber cuándo se publicó
+// cada link y descartar los de más de `maxDiasAntiguedad` días.
+//
+// Para otras páginas sin esa estructura, no hay forma confiable de
+// saber la fecha del link, así que se incluyen igual (sin filtrar
+// por fecha) pero respetando el límite máximo de cantidad.
 // ----------------------------------------------------------------
-function extraerLinksRelevantes(htmlOTexto: string, maxLinks = 5): string[] {
-  const regex = /https?:\/\/[^\s"'<>]+/g;
-  const encontrados = htmlOTexto.match(regex) || [];
-
+function extraerLinksRelevantes(
+  htmlCrudo: string,
+  maxLinks = 15,
+  maxDiasAntiguedad = 7
+): string[] {
   const descartar = [
     'telegram.org',
     't.me/s/',
+    't.me/share',
     'instagram.com',
     'facebook.com',
     'twitter.com',
@@ -47,10 +56,57 @@ function extraerLinksRelevantes(htmlOTexto: string, maxLinks = 5): string[] {
     '.js',
   ];
 
-  const unicos = [...new Set(encontrados)]
-    .map((u) => u.replace(/[),.;]+$/, '')) // saca puntuación pegada al final
-    .filter((u) => !descartar.some((d) => u.toLowerCase().includes(d)));
+  function esDescartable(url: string): boolean {
+    return descartar.some((d) => url.toLowerCase().includes(d));
+  }
 
+  function limpiarUrl(url: string): string {
+    return url.replace(/[),.;]+$/, '');
+  }
+
+  const esTelegram = htmlCrudo.includes('tgme_widget_message') || htmlCrudo.includes('t.me/s/');
+
+  if (esTelegram) {
+    // Partimos el HTML en bloques de mensaje individuales de Telegram.
+    const bloques = htmlCrudo.split('tgme_widget_message_wrap');
+    const ahora = Date.now();
+    const limiteMs = maxDiasAntiguedad * 24 * 60 * 60 * 1000;
+
+    const linksConFecha: { url: string; fecha: number }[] = [];
+
+    for (const bloque of bloques) {
+      const matchFecha = bloque.match(/datetime="([\d-]+T[\d:]+)/);
+      if (!matchFecha) continue;
+      const fecha = new Date(matchFecha[1]).getTime();
+      if (isNaN(fecha)) continue;
+      if (ahora - fecha > limiteMs) continue; // mensaje viejo, lo saltamos
+
+      const urlsEnBloque = bloque.match(/https?:\/\/[^\s"'<>]+/g) || [];
+      for (const u of urlsEnBloque) {
+        const limpia = limpiarUrl(u);
+        if (!esDescartable(limpia)) {
+          linksConFecha.push({ url: limpia, fecha });
+        }
+      }
+    }
+
+    // Ordenamos del más reciente al más viejo y quitamos duplicados.
+    linksConFecha.sort((a, b) => b.fecha - a.fecha);
+    const vistos = new Set<string>();
+    const resultado: string[] = [];
+    for (const { url } of linksConFecha) {
+      if (!vistos.has(url)) {
+        vistos.add(url);
+        resultado.push(url);
+      }
+    }
+    return resultado.slice(0, maxLinks);
+  }
+
+  // Páginas genéricas sin estructura de fecha detectable: incluimos
+  // todos los links relevantes encontrados, sin poder filtrar por fecha.
+  const encontrados = htmlCrudo.match(/https?:\/\/[^\s"'<>]+/g) || [];
+  const unicos = [...new Set(encontrados)].map(limpiarUrl).filter((u) => !esDescartable(u));
   return unicos.slice(0, maxLinks);
 }
 
@@ -114,9 +170,10 @@ async function revisarPagina(
     const htmlPrincipal = await res.text();
     const textoPrincipal = htmlATexto(htmlPrincipal);
 
-    // Buscamos links relevantes tanto en el HTML crudo (por si hay
-    // <a href> que no aparecen en el texto visible) como en el texto plano.
-    const links = extraerLinksRelevantes(htmlPrincipal + ' ' + textoPrincipal);
+    // Usamos el HTML crudo (no el texto ya limpiado) porque ahí es donde
+    // vive la estructura de mensajes y fechas de Telegram, necesaria
+    // para poder filtrar links por antigüedad.
+    const links = extraerLinksRelevantes(htmlPrincipal, 15, 7);
 
     const textosSecundarios = await Promise.all(links.map((l) => descargarTexto(l)));
 
