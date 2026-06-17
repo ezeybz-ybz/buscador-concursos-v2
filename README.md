@@ -67,6 +67,39 @@ Cualquier cambio que necesites (textos, colores, campos nuevos) se hace
 editando el código y volviendo a subirlo a GitHub — Vercel redeploya solo
 automáticamente cada vez que hacés push.
 
+## Monitoreo automático de páginas con IA
+
+Además de leer Docentes Brown en vivo, la web puede vigilar otras páginas
+todos los días y cargar solas los concursos nuevos que aparezcan, usando la
+API de DeepSeek para interpretar el contenido.
+
+### Cómo activarlo
+
+1. Conseguí una API key de DeepSeek en
+   [platform.deepseek.com](https://platform.deepseek.com).
+2. En Vercel → tu proyecto → Settings → Environment Variables, agregá:
+   - `DEEPSEEK_API_KEY` = tu API key de DeepSeek
+   - `CRON_SECRET` = cualquier texto largo y random que elijas (por ejemplo,
+     generá uno en [random.org](https://www.random.org) o escribí 30
+     caracteres al azar). Solo lo usa Vercel internamente, no hace falta que
+     lo recuerdes.
+3. Hacé Redeploy para que tome las nuevas variables.
+4. Entrá a `/admin` → sección "🤖 Monitoreo automático con IA" → agregá el
+   nombre y la URL de cada página que quieras vigilar.
+5. Click en "🔍 Revisar ahora" para probarlo manualmente en el momento, o
+   esperá: el sistema revisa todas las páginas activas automáticamente una
+   vez por día (configurado a las 8am hora Argentina).
+
+### Cómo funciona
+
+Cada revisión hace lo siguiente por cada página activa: descarga su
+contenido, se lo manda a DeepSeek pidiéndole que identifique concursos
+docentes y los devuelva en un formato estructurado, y por cada concurso
+detectado revisa si ya existe uno con el mismo título e institución en la
+base — si no existe, lo agrega automáticamente marcado como "origen:
+automático". Esto evita que se duplique un concurso que ya viste o cargaste
+antes.
+
 ## Notas técnicas
 
 - Los datos de Docentes Brown **nunca se guardan**: cada vez que alguien

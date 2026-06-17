@@ -30,8 +30,17 @@ export type Concurso = {
   notas: string;
 };
 
+export type PaginaVigilada = {
+  id: number;
+  nombre: string;
+  url: string;
+  activa: boolean;
+  ultima_revision: string | null;
+  ultimo_resultado: string;
+};
+
 // ----------------------------------------------------------------
-// Inicializar tabla (se llama una vez, o vía script de setup)
+// Inicializar tablas (se llama una vez, o vía script de setup)
 // ----------------------------------------------------------------
 export async function ensureSchema() {
   await sql`
@@ -52,6 +61,21 @@ export async function ensureSchema() {
       modalidad TEXT DEFAULT '',
       comunicado_url TEXT DEFAULT '',
       notas TEXT DEFAULT '',
+      origen TEXT DEFAULT 'manual',
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `;
+  // Por si la tabla ya existía de antes sin la columna origen
+  await sql`ALTER TABLE concursos_propios ADD COLUMN IF NOT EXISTS origen TEXT DEFAULT 'manual';`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS paginas_vigiladas (
+      id SERIAL PRIMARY KEY,
+      nombre TEXT NOT NULL,
+      url TEXT NOT NULL,
+      activa BOOLEAN DEFAULT TRUE,
+      ultima_revision TIMESTAMP,
+      ultimo_resultado TEXT DEFAULT '',
       created_at TIMESTAMP DEFAULT NOW()
     );
   `;
@@ -124,4 +148,70 @@ export async function actualizarConcursoPropio(id: number, data: Partial<Concurs
 
 export async function borrarConcursoPropio(id: number) {
   await sql`DELETE FROM concursos_propios WHERE id = ${id};`;
+}
+
+// ----------------------------------------------------------------
+// Páginas vigiladas por el monitor automático
+// ----------------------------------------------------------------
+export async function getPaginasVigiladas(): Promise<PaginaVigilada[]> {
+  const { rows } = await sql`SELECT * FROM paginas_vigiladas ORDER BY created_at DESC;`;
+  return rows.map((r: any) => ({
+    id: r.id,
+    nombre: r.nombre,
+    url: r.url,
+    activa: r.activa,
+    ultima_revision: r.ultima_revision,
+    ultimo_resultado: r.ultimo_resultado || '',
+  }));
+}
+
+export async function crearPaginaVigilada(nombre: string, url: string) {
+  await sql`INSERT INTO paginas_vigiladas (nombre, url) VALUES (${nombre}, ${url});`;
+}
+
+export async function borrarPaginaVigilada(id: number) {
+  await sql`DELETE FROM paginas_vigiladas WHERE id = ${id};`;
+}
+
+export async function actualizarEstadoPagina(id: number, resultado: string) {
+  await sql`
+    UPDATE paginas_vigiladas
+    SET ultima_revision = NOW(), ultimo_resultado = ${resultado}
+    WHERE id = ${id};
+  `;
+}
+
+// ----------------------------------------------------------------
+// Insertar un concurso detectado automáticamente, evitando duplicados.
+// Se considera duplicado si ya existe uno con mismo título + institución.
+// Devuelve true si lo insertó, false si ya existía.
+// ----------------------------------------------------------------
+export async function crearConcursoAutomaticoSiNoExiste(
+  data: Partial<Concurso>
+): Promise<boolean> {
+  const titulo = (data.titulo || '').trim();
+  const institucion = (data.institucion || '').trim();
+  if (!titulo) return false;
+
+  const { rows } = await sql`
+    SELECT id FROM concursos_propios
+    WHERE LOWER(titulo) = LOWER(${titulo})
+      AND LOWER(institucion) = LOWER(${institucion})
+    LIMIT 1;
+  `;
+  if (rows.length > 0) return false;
+
+  await sql`
+    INSERT INTO concursos_propios
+      (campo, titulo, distrito, institucion, carrera, unidad_curricular, perfil,
+       inicio_inscripcion, cierre_inscripcion, dia_horario, modulos, revista, modalidad,
+       comunicado_url, notas, origen)
+    VALUES
+      (${data.campo || ''}, ${titulo}, ${data.distrito || ''}, ${institucion},
+       ${data.carrera || ''}, ${data.unidad_curricular || ''}, ${data.perfil || ''},
+       ${data.inicio_inscripcion || ''}, ${data.cierre_inscripcion || ''}, ${data.dia_horario || ''},
+       ${data.modulos || ''}, ${data.revista || ''}, ${data.modalidad || ''},
+       ${data.comunicado_url || ''}, ${data.notas || ''}, 'automatico');
+  `;
+  return true;
 }

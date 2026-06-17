@@ -50,6 +50,12 @@ export default function AdminPage() {
   const [guardando, setGuardando] = useState(false);
   const [msg, setMsg] = useState('');
 
+  const [paginas, setPaginas] = useState<any[]>([]);
+  const [nuevaPaginaNombre, setNuevaPaginaNombre] = useState('');
+  const [nuevaPaginaUrl, setNuevaPaginaUrl] = useState('');
+  const [revisando, setRevisando] = useState(false);
+  const [msgRevision, setMsgRevision] = useState('');
+
   useEffect(() => {
     verificarAuth();
   }, []);
@@ -62,6 +68,7 @@ export default function AdminPage() {
       setAutenticado(true);
       const data = await res.json();
       setLista(data.concursos || []);
+      cargarPaginas();
     }
   }
 
@@ -85,6 +92,62 @@ export default function AdminPage() {
     const res = await fetch('/api/admin/concursos');
     const data = await res.json();
     setLista(data.concursos || []);
+  }
+
+  async function cargarPaginas() {
+    const res = await fetch('/api/admin/paginas');
+    const data = await res.json();
+    setPaginas(data.paginas || []);
+  }
+
+  async function agregarPagina() {
+    if (!nuevaPaginaNombre.trim() || !nuevaPaginaUrl.trim()) {
+      setMsgRevision('❌ Completá nombre y URL');
+      return;
+    }
+    await fetch('/api/admin/paginas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nombre: nuevaPaginaNombre, url: nuevaPaginaUrl }),
+    });
+    setNuevaPaginaNombre('');
+    setNuevaPaginaUrl('');
+    setMsgRevision('✅ Página agregada');
+    cargarPaginas();
+  }
+
+  async function borrarPagina(id: number) {
+    if (!confirm('¿Dejar de vigilar esta página?')) return;
+    await fetch('/api/admin/paginas?id=' + id, { method: 'DELETE' });
+    cargarPaginas();
+  }
+
+  async function revisarAhora() {
+    setRevisando(true);
+    setMsgRevision('⏳ Revisando páginas vigiladas con IA, puede tardar un minuto...');
+    try {
+      const res = await fetch('/api/admin/revisar-ahora', { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) {
+        setMsgRevision('❌ ' + (data.error || 'Error desconocido'));
+      } else if (data.paginas_revisadas === 0) {
+        setMsgRevision('⚠️ No hay páginas activas para revisar. Agregá alguna abajo.');
+      } else {
+        const totalNuevos = data.resultados.reduce((acc: number, r: any) => {
+          const match = r.resumen?.match(/(\d+) nuevos/);
+          return acc + (match ? parseInt(match[1]) : 0);
+        }, 0);
+        setMsgRevision(
+          `✅ Revisión completa: ${data.paginas_revisadas} página(s) revisadas, ${totalNuevos} concurso(s) nuevo(s) cargados`
+        );
+        cargarLista();
+        cargarPaginas();
+      }
+    } catch (e: any) {
+      setMsgRevision('❌ Error: ' + e.message);
+    } finally {
+      setRevisando(false);
+    }
   }
 
   function actualizarCampo(campo: keyof ConcursoForm, valor: string) {
@@ -271,6 +334,78 @@ export default function AdminPage() {
             </button>
           )}
         </div>
+      </section>
+
+      <section className="bg-white border border-slate-200 rounded-2xl p-5 mb-8 shadow-sm">
+        <h2 className="text-sm font-bold mb-1 text-slate-600">🤖 Monitoreo automático con IA</h2>
+        <p className="text-xs text-slate-400 mb-4">
+          Agregá páginas para que se revisen automáticamente todos los días y se carguen solas los
+          concursos nuevos que encuentre.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-2 mb-4">
+          <input
+            placeholder="Nombre (ej: ISFD 21)"
+            value={nuevaPaginaNombre}
+            onChange={(e) => setNuevaPaginaNombre(e.target.value)}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+          />
+          <input
+            placeholder="https://..."
+            value={nuevaPaginaUrl}
+            onChange={(e) => setNuevaPaginaUrl(e.target.value)}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+          />
+          <button
+            onClick={agregarPagina}
+            className="bg-slate-800 text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-slate-700"
+          >
+            + Agregar
+          </button>
+        </div>
+
+        <div className="space-y-2 mb-4">
+          {paginas.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center justify-between gap-3 border border-slate-100 rounded-lg px-3 py-2"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-semibold truncate">{p.nombre}</p>
+                <p className="text-xs text-slate-400 truncate">{p.url}</p>
+                {p.ultimo_resultado && (
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Última revisión: {p.ultimo_resultado}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => borrarPagina(p.id)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 shrink-0"
+              >
+                Quitar
+              </button>
+            </div>
+          ))}
+          {paginas.length === 0 && (
+            <p className="text-xs text-slate-400 text-center py-3">
+              Todavía no agregaste ninguna página para vigilar.
+            </p>
+          )}
+        </div>
+
+        <button
+          onClick={revisarAhora}
+          disabled={revisando}
+          className="w-full bg-brand-600 text-white font-semibold text-sm py-2.5 rounded-lg hover:bg-brand-700 disabled:opacity-50"
+        >
+          {revisando ? 'Revisando…' : '🔍 Revisar ahora'}
+        </button>
+        {msgRevision && <p className="text-xs mt-3">{msgRevision}</p>}
+        <p className="text-[11px] text-slate-400 mt-3">
+          Además de poder revisar manualmente con este botón, el sistema revisa todas las páginas
+          activas automáticamente una vez por día.
+        </p>
       </section>
 
       <h2 className="text-sm font-bold mb-3 text-slate-600">
