@@ -94,12 +94,34 @@ function fileToBase64(file: File): Promise<string> {
 async function procesarEnServidor(texto: string): Promise<Partial<ConcursoForm>[]> {
   const form = new FormData();
   form.append('texto', texto);
-  const res = await fetch('/api/admin/procesar-archivo', { method: 'POST', body: form });
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.error || 'Error del servidor');
-  // El servidor devuelve { lista: [...] } o { datos: {...} } (retrocompatible)
+
+  let res: Response;
+  try {
+    res = await fetch('/api/admin/procesar-archivo', { method: 'POST', body: form });
+  } catch (e: any) {
+    throw new Error('No se pudo conectar con el servidor. Revisá tu conexión e intentá de nuevo.');
+  }
+
+  // Leer el texto crudo primero, sin asumir que es JSON válido
+  const raw = await res.text();
+  if (!raw || !raw.trim()) {
+    throw new Error('El servidor no devolvió respuesta. Puede ser un timeout — el PDF es muy largo. Intentá de nuevo.');
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    // Si el servidor devolvió HTML de error de Vercel u otra cosa
+    const preview = raw.slice(0, 150).replace(/\n/g, ' ');
+    throw new Error(`Respuesta inesperada del servidor: ${preview}`);
+  }
+
+  if (!data.ok) throw new Error(data.error || 'Error desconocido del servidor');
   if (Array.isArray(data.lista)) return data.lista;
   if (data.datos) return [data.datos];
+  return [];
+}
   return [];
 }
 
