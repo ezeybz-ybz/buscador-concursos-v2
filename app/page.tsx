@@ -26,6 +26,15 @@ const POR_PAGINA = 9;
 const INSTAGRAM_URL = 'https://instagram.com/asesorias.profesorabuletti';
 const WHATSAPP_URL = 'https://wa.me/5491138039622';
 
+// Registra un evento de forma silenciosa (nunca muestra error al usuario)
+function trackEvento(evento: 'visita' | 'click_whatsapp' | 'click_instagram') {
+  fetch('/api/stats', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ evento }),
+  }).catch(() => {}); // silencioso
+}
+
 export default function HomePage() {
   const [concursos, setConcursos] = useState<Concurso[]>([]);
   const [cargando, setCargando] = useState(true);
@@ -40,6 +49,7 @@ export default function HomePage() {
 
   useEffect(() => {
     cargar();
+    trackEvento('visita'); // registrar visita al cargar la página
   }, []);
 
   async function cargar() {
@@ -301,6 +311,7 @@ export default function HomePage() {
               href={INSTAGRAM_URL}
               target="_blank"
               rel="noreferrer"
+              onClick={() => trackEvento('click_instagram')}
               className="bg-white border-2 border-slate-100 rounded-2xl p-5 text-center hover:border-teal-300 hover:bg-teal-50 transition group"
             >
               <span className="text-2xl block mb-2">💜</span>
@@ -448,6 +459,7 @@ export default function HomePage() {
         href={WHATSAPP_URL}
         target="_blank"
         rel="noreferrer"
+        onClick={() => trackEvento('click_whatsapp')}
         aria-label="Escribir por WhatsApp a Asesorías Profesora Buletti"
         className="fixed right-5 bottom-24 z-50 w-14 h-14 rounded-full bg-[#25D366] shadow-lg shadow-emerald-900/30 flex items-center justify-center text-3xl hover:scale-110 transition-transform"
       >
@@ -462,6 +474,7 @@ export default function HomePage() {
           href={INSTAGRAM_URL}
           target="_blank"
           rel="noreferrer"
+          onClick={() => trackEvento('click_instagram')}
           className="block bg-gradient-to-r from-brand-600 via-brand-500 to-teal-500 text-white"
         >
           <div className="max-w-5xl mx-auto px-5 py-3.5 flex items-center justify-between gap-4">

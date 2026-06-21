@@ -79,6 +79,42 @@ export async function ensureSchema() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `;
+
+  // Tabla de estadísticas: un registro por evento (visita, click WA, click IG)
+  await sql`
+    CREATE TABLE IF NOT EXISTS estadisticas (
+      id SERIAL PRIMARY KEY,
+      evento TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `;
+}
+
+// ----------------------------------------------------------------
+// Estadísticas
+// ----------------------------------------------------------------
+export async function registrarEvento(evento: 'visita' | 'click_whatsapp' | 'click_instagram') {
+  await sql`INSERT INTO estadisticas (evento) VALUES (${evento});`;
+}
+
+export async function getEstadisticas() {
+  const { rows } = await sql`
+    SELECT
+      COUNT(*) FILTER (WHERE evento = 'visita')         AS visitas,
+      COUNT(*) FILTER (WHERE evento = 'click_whatsapp') AS clicks_whatsapp,
+      COUNT(*) FILTER (WHERE evento = 'click_instagram') AS clicks_instagram,
+      COUNT(*) FILTER (WHERE evento = 'visita' AND created_at >= NOW() - INTERVAL '7 days')  AS visitas_7d,
+      COUNT(*) FILTER (WHERE evento = 'visita' AND created_at >= NOW() - INTERVAL '30 days') AS visitas_30d
+    FROM estadisticas;
+  `;
+  const r = rows[0] || {};
+  return {
+    visitas_total:      parseInt(r.visitas          || '0'),
+    clicks_whatsapp:    parseInt(r.clicks_whatsapp  || '0'),
+    clicks_instagram:   parseInt(r.clicks_instagram || '0'),
+    visitas_7d:         parseInt(r.visitas_7d        || '0'),
+    visitas_30d:        parseInt(r.visitas_30d       || '0'),
+  };
 }
 
 // ----------------------------------------------------------------
@@ -214,4 +250,21 @@ export async function crearConcursoAutomaticoSiNoExiste(
        ${data.comunicado_url || ''}, ${data.notas || ''}, 'automatico');
   `;
   return true;
+}
+
+// ----------------------------------------------------------------
+// Limpiar concursos vencidos (cierre_inscripcion anterior a hoy).
+// Se llama desde el cron job diario.
+// Solo borra los que tienen fecha de cierre informada y ya pasó.
+// Devuelve la cantidad de registros borrados.
+// ----------------------------------------------------------------
+export async function limpiarConcursosVencidos(): Promise<number> {
+  const hoy = new Date().toISOString().split('T')[0]; // yyyy-mm-dd
+  const { rowCount } = await sql`
+    DELETE FROM concursos_propios
+    WHERE cierre_inscripcion != ''
+      AND cierre_inscripcion IS NOT NULL
+      AND cierre_inscripcion < ${hoy};
+  `;
+  return rowCount ?? 0;
 }

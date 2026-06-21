@@ -27,22 +27,16 @@ const VACIO: ConcursoForm = {
 };
 
 // ----------------------------------------------------------------
-// Extrae todo el texto de un PDF usando pdf.js (cargado via CDN).
-// Funciona con cualquier tipo de PDF: texto nativo, tablas, formularios.
-// Si el PDF es un scan sin OCR, devuelve string vacío.
+// Extrae texto de un PDF usando pdf.js (CDN)
 // ----------------------------------------------------------------
-async function extraerTextoDePDF(file: File): Promise<string> {
+async function extraerTextoPDF(file: File): Promise<string> {
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
         const typedArray = new Uint8Array(e.target!.result as ArrayBuffer);
         const pdfjsLib = (window as any)['pdfjs-dist/build/pdf'];
-        if (!pdfjsLib) {
-          // Fallback: si pdf.js no cargó, mandamos el archivo como base64 raw
-          resolve('');
-          return;
-        }
+        if (!pdfjsLib) { resolve(''); return; }
         pdfjsLib.GlobalWorkerOptions.workerSrc =
           'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
@@ -50,13 +44,10 @@ async function extraerTextoDePDF(file: File): Promise<string> {
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const content = await page.getTextContent();
-          const linea = content.items.map((item: any) => item.str).join(' ');
-          textos.push(linea);
+          textos.push(content.items.map((item: any) => item.str).join(' '));
         }
         resolve(textos.join('\n'));
-      } catch {
-        resolve('');
-      }
+      } catch { resolve(''); }
     };
     reader.onerror = () => resolve('');
     reader.readAsArrayBuffer(file);
@@ -64,8 +55,28 @@ async function extraerTextoDePDF(file: File): Promise<string> {
 }
 
 // ----------------------------------------------------------------
-// Fallback: lee el archivo como base64 para mandarlo directo a DeepSeek
-// (útil si pdf.js falla o el PDF es un scan)
+// Extrae texto de un .docx usando mammoth.js (CDN)
+// ----------------------------------------------------------------
+async function extraerTextoWord(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const mammoth = (window as any).mammoth;
+        if (!mammoth) { resolve(''); return; }
+        const result = await mammoth.extractRawText({
+          arrayBuffer: e.target!.result as ArrayBuffer,
+        });
+        resolve(result.value || '');
+      } catch { resolve(''); }
+    };
+    reader.onerror = () => resolve('');
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// ----------------------------------------------------------------
+// Convierte a base64 (fallback para PDFs sin texto extraíble / scans)
 // ----------------------------------------------------------------
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -76,94 +87,20 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-const PROMPT_EXTRACCION = `Sos un asistente especializado en concursos docentes de la provincia de Buenos Aires, Argentina.
-Analizá el contenido y extraé TODOS los datos del llamado a concurso docente.
-Devolvé SOLO un JSON con esta estructura exacta, sin texto antes ni después, sin bloques de código:
-{
-  "titulo": "nombre principal de la materia, cargo o unidad curricular",
-  "campo": "campo o nivel educativo (ej: Unidades Curriculares Ed. Superior, Secundaria Técnica, Cargos)",
-  "distrito": "distrito o partido (ej: Moreno, Merlo, La Matanza)",
-  "institucion": "nombre completo del instituto o escuela (ej: ISFD N° 21, ISFT N° 180)",
-  "carrera": "carrera o resolución asociada (ej: Profesorado de Matemática | Res. 1861/17)",
-  "unidad_curricular": "nombre exacto de la unidad curricular o materia",
-  "perfil": "perfil docente requerido según el documento",
-  "inicio_inscripcion": "fecha de inicio de inscripción en formato yyyy-mm-dd, vacío si no hay",
-  "cierre_inscripcion": "fecha de cierre de inscripción en formato yyyy-mm-dd, vacío si no hay",
-  "dia_horario": "día y horario de clases si se informa, sino vacío",
-  "modulos": "cantidad de módulos si se informa, sino vacío",
-  "revista": "tipo de revista (provisional, suplencia, etc.) si se informa, sino vacío",
-  "modalidad": "modalidad (Presencialidad Plena, Semipresencial, Virtual, etc.) si se informa, sino vacío",
-  "comunicado_url": "URL del comunicado si aparece algún link, sino vacío",
-  "notas": "cualquier información relevante adicional: número de resolución, código de espacio, observaciones importantes"
-}
-Si no encontrás un dato, dejá el campo como string vacío "".
-Si hay múltiples materias en el mismo documento, extraé la primera o la principal.`;
-
 // ----------------------------------------------------------------
-// Llama a DeepSeek con el texto del PDF (o base64 como fallback)
+// Envía el texto al servidor → DeepSeek devuelve UNA LISTA de concursos
+// (la key vive solo en Vercel, nunca sale al browser)
 // ----------------------------------------------------------------
-async function extraerDatosConIA(
-  texto: string,
-  base64: string,
-  apiKey: string
-): Promise<Partial<ConcursoForm>> {
-  let body: any;
-
-  if (texto && texto.trim().length > 100) {
-    // Tenemos texto real: mandamos como texto plano (más barato y más preciso)
-    body = {
-      model: 'deepseek-chat',
-      messages: [{
-        role: 'user',
-        content: PROMPT_EXTRACCION + '\n\nContenido del PDF:\n\n' + texto.slice(0, 15000),
-      }],
-      temperature: 0,
-      max_tokens: 1500,
-    };
-  } else {
-    // PDF sin texto extraíble (scan u otro): mandamos el archivo como imagen
-    body = {
-      model: 'deepseek-chat',
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: PROMPT_EXTRACCION },
-          { type: 'image_url', image_url: { url: `data:application/pdf;base64,${base64}` } },
-        ],
-      }],
-      temperature: 0,
-      max_tokens: 1500,
-    };
-  }
-
-  const res = await fetch('https://api.deepseek.com/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Error de DeepSeek (${res.status}): ${err.slice(0, 300)}`);
-  }
-
+async function procesarEnServidor(texto: string): Promise<Partial<ConcursoForm>[]> {
+  const form = new FormData();
+  form.append('texto', texto);
+  const res = await fetch('/api/admin/procesar-archivo', { method: 'POST', body: form });
   const data = await res.json();
-  const raw = data.choices?.[0]?.message?.content || '{}';
-  const clean = raw.replace(/```json|```/g, '').trim();
-
-  try {
-    return JSON.parse(clean) as Partial<ConcursoForm>;
-  } catch {
-    // Intento recuperar el JSON aunque haya texto alrededor
-    const match = clean.match(/\{[\s\S]*\}/);
-    if (match) {
-      try { return JSON.parse(match[0]); } catch {}
-    }
-    throw new Error('La IA no devolvió un JSON válido. Intentá de nuevo con el mismo PDF.');
-  }
+  if (!data.ok) throw new Error(data.error || 'Error del servidor');
+  // El servidor devuelve { lista: [...] } o { datos: {...} } (retrocompatible)
+  if (Array.isArray(data.lista)) return data.lista;
+  if (data.datos) return [data.datos];
+  return [];
 }
 
 // ----------------------------------------------------------------
@@ -184,10 +121,10 @@ export default function AdminPage() {
   const [guardando, setGuardando] = useState(false);
   const [msgForm, setMsgForm] = useState('');
 
-  // PDF con IA
-  const [leyendoPDF, setLeyendoPDF] = useState(false);
-  const [msgPDF, setMsgPDF] = useState('');
-  const [deepseekKey, setDeepseekKey] = useState('');
+  // PDF / Word con IA
+  const [leyendoArchivo, setLeyendoArchivo] = useState(false);
+  const [msgArchivo, setMsgArchivo] = useState('');
+  const [listaPDF, setListaPDF] = useState<Partial<ConcursoForm>[]>([]);
   const inputFileRef = useRef<HTMLInputElement>(null);
 
   // Monitoreo automático
@@ -200,13 +137,21 @@ export default function AdminPage() {
   // Vista activa en la lista (para poder ir directo a editar)
   const [vistaActiva, setVistaActiva] = useState<'lista' | 'monitoreo'>('lista');
 
+  // Estadísticas
+  const [stats, setStats] = useState<any>(null);
+
   useEffect(() => {
     verificarAuth();
-    // Cargar pdf.js desde CDN
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-    script.async = true;
-    document.head.appendChild(script);
+    // Cargar pdf.js para leer PDFs
+    const scriptPDF = document.createElement('script');
+    scriptPDF.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    scriptPDF.async = true;
+    document.head.appendChild(scriptPDF);
+    // Cargar mammoth.js para leer archivos Word (.docx)
+    const scriptWord = document.createElement('script');
+    scriptWord.src = 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js';
+    scriptWord.async = true;
+    document.head.appendChild(scriptWord);
   }, []);
 
   async function verificarAuth() {
@@ -218,9 +163,16 @@ export default function AdminPage() {
       const data = await res.json();
       setLista(data.concursos || []);
       cargarPaginas();
-      const savedKey = typeof window !== 'undefined' ? localStorage.getItem('ds_key') : '';
-      if (savedKey) setDeepseekKey(savedKey);
+      cargarStats();
     }
+  }
+
+  async function cargarStats() {
+    try {
+      const res = await fetch('/api/admin/stats');
+      const data = await res.json();
+      if (data.ok) setStats(data.stats);
+    } catch {}
   }
 
   async function login() {
@@ -250,50 +202,84 @@ export default function AdminPage() {
   }
 
   // ----------------------------------------------------------------
-  // SUBIR PDF → IA → AUTOCOMPLETA
+  // SUBIR ARCHIVO (PDF o Word) → extrae texto → IA → lista de concursos
   // ----------------------------------------------------------------
-  async function procesarPDF(e: React.ChangeEvent<HTMLInputElement>) {
+  async function procesarArchivo(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!deepseekKey.trim()) {
-      setMsgPDF('❌ Primero ingresá tu API key de DeepSeek en el campo de arriba.');
+
+    const esWord = file.name.endsWith('.docx') || file.name.endsWith('.doc');
+    const esPDF  = file.name.endsWith('.pdf');
+
+    if (!esWord && !esPDF) {
+      setMsgArchivo('❌ Formato no soportado. Subí un archivo PDF o Word (.docx).');
       return;
     }
-    setLeyendoPDF(true);
-    setMsgPDF('⏳ Extrayendo texto del PDF...');
+
+    setLeyendoArchivo(true);
+    setListaPDF([]);
+    setMsgArchivo(`⏳ Leyendo ${esWord ? 'Word' : 'PDF'}...`);
+
     try {
-      const [texto, base64] = await Promise.all([
-        extraerTextoDePDF(file),
-        fileToBase64(file),
-      ]);
-      setMsgPDF(
-        texto.trim().length > 100
-          ? '⏳ Texto extraído. Analizando con IA...'
-          : '⏳ PDF sin texto extraíble, enviando como imagen a la IA...'
-      );
-      const datos = await extraerDatosConIA(texto, base64, deepseekKey.trim());
-      // Completar el formulario con los datos, sin pisar lo que el usuario ya había escrito a mano
-      setForm(prev => {
-        const next = { ...prev };
-        for (const key of Object.keys(VACIO) as (keyof ConcursoForm)[]) {
-          if (datos[key] && String(datos[key]).trim()) {
-            next[key] = String(datos[key]);
-          }
+      let texto = '';
+
+      if (esWord) {
+        texto = await extraerTextoWord(file);
+        if (!texto.trim()) throw new Error('No se pudo extraer texto del archivo Word.');
+      } else {
+        texto = await extraerTextoPDF(file);
+        if (!texto.trim()) {
+          setMsgArchivo('⏳ PDF sin texto extraíble, procesando como imagen...');
+          const base64 = await fileToBase64(file);
+          const formData = new FormData();
+          formData.append('texto', `[PDF escaneado: ${file.name}]`);
+          formData.append('base64', base64);
+          const res = await fetch('/api/admin/procesar-archivo', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error);
+          const lista = Array.isArray(data.lista) ? data.lista : [data.datos];
+          setListaPDF(lista);
+          setMsgArchivo(`✅ ${lista.length} concurso(s) detectado(s). Hacé clic en "Cargar" para pasarlo al formulario.`);
+          return;
         }
-        return next;
-      });
-      setMsgPDF('✅ Datos cargados desde el PDF. Revisá y ajustá lo que sea necesario antes de guardar.');
+      }
+
+      setMsgArchivo('⏳ Analizando con IA...');
+      const lista = await procesarEnServidor(texto);
+      setListaPDF(lista);
+      if (lista.length === 1) {
+        aplicarDatos(lista[0]);
+        setMsgArchivo('✅ Concurso cargado en el formulario. Revisá y guardá.');
+      } else if (lista.length > 1) {
+        setMsgArchivo(`✅ ${lista.length} concursos detectados en el archivo. Elegí cuál cargar.`);
+      } else {
+        setMsgArchivo('⚠️ No se detectaron concursos en el archivo.');
+      }
     } catch (err: any) {
-      setMsgPDF('❌ ' + err.message);
+      setMsgArchivo('❌ ' + err.message);
     } finally {
-      setLeyendoPDF(false);
+      setLeyendoArchivo(false);
       if (inputFileRef.current) inputFileRef.current.value = '';
     }
   }
 
-  function guardarKey(key: string) {
-    setDeepseekKey(key);
-    if (typeof window !== 'undefined') localStorage.setItem('ds_key', key);
+  // Limpia el form COMPLETAMENTE antes de aplicar datos nuevos (cambio 3)
+  function aplicarDatos(datos: Partial<ConcursoForm>) {
+    const nuevo = { ...VACIO };
+    for (const key of Object.keys(VACIO) as (keyof ConcursoForm)[]) {
+      if (datos[key] !== undefined && datos[key] !== null) {
+        nuevo[key] = String(datos[key]);
+      }
+    }
+    setForm(nuevo);
+    setEditandoId(null);
+  }
+
+  function cargarDesdeLista(idx: number) {
+    aplicarDatos(listaPDF[idx]);
+    setListaPDF([]);
+    setMsgArchivo('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   // ----------------------------------------------------------------
@@ -307,7 +293,7 @@ export default function AdminPage() {
     setForm(VACIO);
     setEditandoId(null);
     setMsgForm('');
-    setMsgPDF('');
+    setMsgArchivo('');
   }
 
   function editar(item: any) {
@@ -321,7 +307,7 @@ export default function AdminPage() {
     });
     setEditandoId(parseInt(String(item.id).replace('propio-', '')));
     setMsgForm('');
-    setMsgPDF('');
+    setMsgArchivo('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -457,6 +443,39 @@ export default function AdminPage() {
       </div>
 
       {/* ============================================================
+          SECCIÓN 0: ESTADÍSTICAS
+      ============================================================ */}
+      <section className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-extrabold text-slate-800">📊 Estadísticas</h2>
+          <button onClick={cargarStats} className="text-xs text-slate-400 hover:text-brand-600 transition">
+            🔄 Actualizar
+          </button>
+        </div>
+        {stats ? (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              <StatCard label="Visitas totales" valor={stats.visitas_total} icono="👁" color="brand" />
+              <StatCard label="Últimos 30 días" valor={stats.visitas_30d} icono="📅" color="teal" />
+              <StatCard label="Clicks WhatsApp" valor={stats.clicks_whatsapp} icono="💬" color="green" />
+              <StatCard label="Clicks Instagram" valor={stats.clicks_instagram} icono="💜" color="pink" />
+            </div>
+            <div className="bg-slate-50 rounded-xl px-4 py-3 text-xs text-slate-500">
+              <span className="font-semibold">Última semana:</span> {stats.visitas_7d} visita(s) ·
+              <span className="ml-2">Conversión WA: {stats.visitas_total > 0
+                ? Math.round((stats.clicks_whatsapp / stats.visitas_total) * 100)
+                : 0}%</span> ·
+              <span className="ml-2">Conversión IG: {stats.visitas_total > 0
+                ? Math.round((stats.clicks_instagram / stats.visitas_total) * 100)
+                : 0}%</span>
+            </div>
+          </>
+        ) : (
+          <p className="text-xs text-slate-400 text-center py-4">Cargando estadísticas…</p>
+        )}
+      </section>
+
+      {/* ============================================================
           SECCIÓN 1: FORMULARIO DE CARGA / EDICIÓN
       ============================================================ */}
       <section className="bg-white border-2 border-brand-200 rounded-2xl p-5 shadow-sm">
@@ -481,28 +500,64 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* PDF con IA */}
+        {/* Archivo con IA — PDF o Word, sin necesidad de ingresar key */}
         <div className="bg-brand-50 border border-brand-200 rounded-xl p-4 mb-5">
-          <p className="text-xs font-extrabold text-brand-700 mb-3">
-            🤖 Auto-completar desde PDF con IA (DeepSeek)
+          <p className="text-xs font-extrabold text-brand-700 mb-1">
+            🤖 Auto-completar con IA desde PDF o Word
           </p>
-          <input type="password" placeholder="API key de DeepSeek (se guarda en tu navegador)"
-            value={deepseekKey} onChange={e => guardarKey(e.target.value)}
-            className="w-full border border-brand-200 bg-white rounded-lg px-3 py-2 text-xs mb-3 focus:outline-none focus:ring-2 focus:ring-brand-400" />
-          <label className={`flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed text-xs font-bold cursor-pointer transition
-            ${leyendoPDF ? 'border-brand-200 text-brand-300 cursor-not-allowed' : 'border-brand-500 text-brand-600 hover:bg-brand-100'}`}>
-            {leyendoPDF ? '⏳ Procesando PDF...' : '📄 Hacé clic acá para subir el PDF del llamado'}
-            <input ref={inputFileRef} type="file" accept=".pdf" className="hidden" onChange={procesarPDF} disabled={leyendoPDF} />
+          <p className="text-[11px] text-brand-500 mb-3">
+            Subí el comunicado del llamado y la IA detecta todos los concursos del archivo.
+            Si hay varios, elegís cuál cargar al formulario.
+          </p>
+          <label className={`flex items-center justify-center gap-2 py-3.5 rounded-xl border-2 border-dashed text-xs font-bold cursor-pointer transition
+            ${leyendoArchivo
+              ? 'border-brand-200 text-brand-300 cursor-not-allowed bg-white'
+              : 'border-brand-500 text-brand-600 hover:bg-brand-100'}`}>
+            {leyendoArchivo
+              ? '⏳ ' + (msgArchivo || 'Procesando...')
+              : '📄 Hacé clic acá para subir el PDF o Word del llamado'}
+            <input
+              ref={inputFileRef}
+              type="file"
+              accept=".pdf,.doc,.docx"
+              className="hidden"
+              onChange={procesarArchivo}
+              disabled={leyendoArchivo}
+            />
           </label>
-          {msgPDF && (
-            <p className={`text-xs mt-2 font-medium ${msgPDF.startsWith('✅') ? 'text-brand-700' : msgPDF.startsWith('❌') ? 'text-red-600' : 'text-slate-500'}`}>
-              {msgPDF}
+
+          {msgArchivo && !leyendoArchivo && (
+            <p className={`text-xs mt-2 font-medium ${
+              msgArchivo.startsWith('✅') ? 'text-brand-700' :
+              msgArchivo.startsWith('❌') ? 'text-red-600' : 'text-amber-600'
+            }`}>
+              {msgArchivo}
             </p>
           )}
-          <p className="text-[11px] text-brand-400 mt-2">
-            La IA lee el PDF y completa los campos. Funciona con cualquier tipo de PDF.
-            Revisá siempre los datos antes de guardar.
-          </p>
+
+          {/* Lista de concursos detectados en el archivo */}
+          {listaPDF.length > 1 && (
+            <div className="mt-3 space-y-2">
+              {listaPDF.map((c, i) => (
+                <div key={i} className="flex items-center justify-between gap-3 bg-white border border-brand-200 rounded-lg px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-slate-800 truncate">
+                      {c.titulo || c.unidad_curricular || `Concurso ${i + 1}`}
+                    </p>
+                    <p className="text-[11px] text-slate-500 truncate">
+                      {[c.institucion, c.distrito].filter(Boolean).join(' · ')}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => cargarDesdeLista(i)}
+                    className="text-xs font-bold px-3 py-1.5 bg-brand-600 text-white rounded-lg hover:bg-brand-700 shrink-0"
+                  >
+                    Cargar →
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Campos del formulario */}
@@ -697,6 +752,27 @@ function Campo({ label, value, onChange, type = 'text' }: {
       </label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)}
         className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------
+// Tarjeta de estadística
+// ----------------------------------------------------------------
+function StatCard({ label, valor, icono, color }: {
+  label: string; valor: number; icono: string; color: 'brand' | 'teal' | 'green' | 'pink';
+}) {
+  const colores = {
+    brand: 'bg-brand-50 border-brand-100 text-brand-700',
+    teal:  'bg-teal-50  border-teal-100  text-teal-700',
+    green: 'bg-green-50 border-green-100 text-green-700',
+    pink:  'bg-pink-50  border-pink-100  text-pink-700',
+  };
+  return (
+    <div className={`border rounded-xl p-4 text-center ${colores[color]}`}>
+      <p className="text-2xl mb-1">{icono}</p>
+      <p className="text-2xl font-extrabold">{valor.toLocaleString('es-AR')}</p>
+      <p className="text-[11px] font-semibold mt-1 opacity-80">{label}</p>
     </div>
   );
 }
