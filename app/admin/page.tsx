@@ -88,44 +88,6 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 // ----------------------------------------------------------------
-// Envía el texto al servidor → DeepSeek devuelve UNA LISTA de concursos
-// (la key vive solo en Vercel, nunca sale al browser)
-// ----------------------------------------------------------------
-async function procesarEnServidor(texto: string): Promise<Partial<ConcursoForm>[]> {
-  const form = new FormData();
-  form.append('texto', texto);
-
-  let res: Response;
-  try {
-    res = await fetch('/api/admin/procesar-archivo', { method: 'POST', body: form });
-  } catch (e: any) {
-    throw new Error('No se pudo conectar con el servidor. Revisá tu conexión e intentá de nuevo.');
-  }
-
-  // Leer el texto crudo primero, sin asumir que es JSON válido
-  const raw = await res.text();
-  if (!raw || !raw.trim()) {
-    throw new Error('El servidor no devolvió respuesta. Puede ser un timeout — el PDF es muy largo. Intentá de nuevo.');
-  }
-
-  let data: any;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    // Si el servidor devolvió HTML de error de Vercel u otra cosa
-    const preview = raw.slice(0, 150).replace(/\n/g, ' ');
-    throw new Error(`Respuesta inesperada del servidor: ${preview}`);
-  }
-
-  if (!data.ok) throw new Error(data.error || 'Error desconocido del servidor');
-  if (Array.isArray(data.lista)) return data.lista;
-  if (data.datos) return [data.datos];
-  return [];
-}
-  return [];
-}
-
-// ----------------------------------------------------------------
 // COMPONENTE PRINCIPAL
 // ----------------------------------------------------------------
 export default function AdminPage() {
@@ -161,6 +123,9 @@ export default function AdminPage() {
 
   // Estadísticas
   const [stats, setStats] = useState<any>(null);
+
+  // Motor de IA para procesar archivos
+  const [motorIA, setMotorIA] = useState<'anthropic' | 'deepseek'>('anthropic');
 
   useEffect(() => {
     verificarAuth();
@@ -224,7 +189,7 @@ export default function AdminPage() {
   }
 
   // ----------------------------------------------------------------
-  // SUBIR ARCHIVO (PDF o Word) → extrae texto → IA → lista de concursos
+  // SUBIR ARCHIVO (PDF o Word) → extrae texto + base64 → IA → lista
   // ----------------------------------------------------------------
   async function procesarArchivo(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -243,39 +208,48 @@ export default function AdminPage() {
     setMsgArchivo(`⏳ Leyendo ${esWord ? 'Word' : 'PDF'}...`);
 
     try {
-      let texto = '';
+      const formData = new FormData();
 
       if (esWord) {
-        texto = await extraerTextoWord(file);
+        const texto = await extraerTextoWord(file);
         if (!texto.trim()) throw new Error('No se pudo extraer texto del archivo Word.');
+        formData.append('texto', texto);
       } else {
-        texto = await extraerTextoPDF(file);
-        if (!texto.trim()) {
-          setMsgArchivo('⏳ PDF sin texto extraíble, procesando como imagen...');
-          const base64 = await fileToBase64(file);
-          const formData = new FormData();
-          formData.append('texto', `[PDF escaneado: ${file.name}]`);
-          formData.append('base64', base64);
-          const res = await fetch('/api/admin/procesar-archivo', { method: 'POST', body: formData });
-          const data = await res.json();
-          if (!data.ok) throw new Error(data.error);
-          const lista = Array.isArray(data.lista) ? data.lista : [data.datos];
-          setListaPDF(lista);
-          setMsgArchivo(`✅ ${lista.length} concurso(s) detectado(s). Hacé clic en "Cargar" para pasarlo al formulario.`);
-          return;
-        }
+        // Para PDFs: mandamos SIEMPRE texto + base64
+        // El servidor elige la mejor estrategia (Anthropic para tablas, DeepSeek para texto simple)
+        setMsgArchivo('⏳ Preparando PDF...');
+        const [texto, base64] = await Promise.all([
+          extraerTextoPDF(file),
+          fileToBase64(file),
+        ]);
+        formData.append('texto', texto || '[PDF sin texto extraíble]');
+        formData.append('base64', base64);
       }
 
-      setMsgArchivo('⏳ Analizando con IA...');
-      const lista = await procesarEnServidor(texto);
+      setMsgArchivo('⏳ Analizando con IA, esto puede tardar unos segundos...');
+      formData.append('motor', motorIA); // le decimos al servidor qué motor usar
+      const res = await fetch('/api/admin/procesar-archivo', { method: 'POST', body: formData });
+
+      // Siempre leer como texto primero para detectar errores HTML
+      const rawText = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error('El servidor no respondió correctamente. Intentá de nuevo.');
+      }
+
+      if (!data.ok) throw new Error(data.error || 'Error desconocido');
+
+      const lista = Array.isArray(data.lista) ? data.lista : [];
+      if (lista.length === 0) throw new Error('No se detectaron concursos en el archivo.');
+
       setListaPDF(lista);
       if (lista.length === 1) {
         aplicarDatos(lista[0]);
         setMsgArchivo('✅ Concurso cargado en el formulario. Revisá y guardá.');
-      } else if (lista.length > 1) {
-        setMsgArchivo(`✅ ${lista.length} concursos detectados en el archivo. Elegí cuál cargar.`);
       } else {
-        setMsgArchivo('⚠️ No se detectaron concursos en el archivo.');
+        setMsgArchivo(`✅ ${lista.length} concursos detectados. Hacé clic en "Cargar →" para cargar cada uno.`);
       }
     } catch (err: any) {
       setMsgArchivo('❌ ' + err.message);
@@ -524,12 +498,40 @@ export default function AdminPage() {
 
         {/* Archivo con IA — PDF o Word, sin necesidad de ingresar key */}
         <div className="bg-brand-50 border border-brand-200 rounded-xl p-4 mb-5">
-          <p className="text-xs font-extrabold text-brand-700 mb-1">
-            🤖 Auto-completar con IA desde PDF o Word
-          </p>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-extrabold text-brand-700">
+              🤖 Auto-completar con IA desde PDF o Word
+            </p>
+            {/* Selector de motor */}
+            <div className="flex border border-brand-300 rounded-lg overflow-hidden text-[11px] font-bold">
+              <button
+                type="button"
+                onClick={() => setMotorIA('anthropic')}
+                className={`px-3 py-1.5 transition ${
+                  motorIA === 'anthropic'
+                    ? 'bg-brand-600 text-white'
+                    : 'bg-white text-brand-600 hover:bg-brand-50'
+                }`}
+              >
+                Claude
+              </button>
+              <button
+                type="button"
+                onClick={() => setMotorIA('deepseek')}
+                className={`px-3 py-1.5 transition ${
+                  motorIA === 'deepseek'
+                    ? 'bg-brand-600 text-white'
+                    : 'bg-white text-brand-600 hover:bg-brand-50'
+                }`}
+              >
+                DeepSeek
+              </button>
+            </div>
+          </div>
           <p className="text-[11px] text-brand-500 mb-3">
-            Subí el comunicado del llamado y la IA detecta todos los concursos del archivo.
-            Si hay varios, elegís cuál cargar al formulario.
+            {motorIA === 'anthropic'
+              ? '✦ Claude (Anthropic) — mejor para PDFs con tablas complejas como las convocatorias docentes.'
+              : '✦ DeepSeek — bueno para PDFs simples con texto plano. Más económico.'}
           </p>
           <label className={`flex items-center justify-center gap-2 py-3.5 rounded-xl border-2 border-dashed text-xs font-bold cursor-pointer transition
             ${leyendoArchivo
