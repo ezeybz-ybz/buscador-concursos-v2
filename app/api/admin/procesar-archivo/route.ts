@@ -37,6 +37,29 @@ Reglas importantes:
 - Devolvé SIEMPRE el array "concursos", aunque sea con un solo elemento.`;
 
 async function llamarDeepSeek(texto: string, apiKey: string) {
+  // Estrategia inteligente de recorte:
+  // Los PDFs de convocatorias tienen la tabla de materias al principio
+  // y después páginas de comisiones evaluadoras, cronogramas y documentación.
+  // Solo nos interesa la primera parte con la tabla de coberturas.
+  // Detectamos dónde empieza la sección administrativa para cortarla.
+  const seccionesCortar = [
+    'Comisiones evaluadoras',
+    'Miembros Titulares',
+    'Cronograma:',
+    'Procedimiento de inscripción',
+    'Documentación Requerida',
+  ];
+  let textoRecortado = texto;
+  for (const marca of seccionesCortar) {
+    const idx = texto.indexOf(marca);
+    if (idx > 2000) { // solo si la marca aparece después de los primeros 2000 chars (evitar falsos positivos)
+      textoRecortado = texto.slice(0, idx);
+      break;
+    }
+  }
+  // Limite máximo de 20000 chars para documentos muy largos
+  textoRecortado = textoRecortado.slice(0, 20000);
+
   const res = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: {
@@ -45,9 +68,9 @@ async function llamarDeepSeek(texto: string, apiKey: string) {
     },
     body: JSON.stringify({
       model: 'deepseek-chat',
-      messages: [{ role: 'user', content: PROMPT + '\n\nContenido del documento:\n\n' + texto.slice(0, 15000) }],
+      messages: [{ role: 'user', content: PROMPT + '\n\nContenido del documento:\n\n' + textoRecortado }],
       temperature: 0,
-      max_tokens: 3000,
+      max_tokens: 8000,  // subimos para que alcance con 19+ concursos
     }),
   });
 
@@ -66,14 +89,38 @@ async function llamarDeepSeek(texto: string, apiKey: string) {
     if (Array.isArray(parsed)) return parsed;
     return [parsed];
   } catch {
-    const match = clean.match(/\{[\s\S]*\}/);
-    if (match) {
+    // Intento 1: buscar el bloque JSON completo
+    const matchFull = clean.match(/\{[\s\S]*\}/);
+    if (matchFull) {
       try {
-        const p = JSON.parse(match[0]);
+        const p = JSON.parse(matchFull[0]);
         return Array.isArray(p.concursos) ? p.concursos : [p];
       } catch {}
     }
-    throw new Error('La IA no devolvió un JSON válido. Intentá de nuevo.');
+
+    // Intento 2: el JSON se cortó a la mitad (max_tokens alcanzado).
+    // Recuperamos los objetos que sí cerraron correctamente.
+    // Buscamos todos los { ... } completos dentro del array "concursos"
+    const itemsCompletos: any[] = [];
+    const regex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}/g;
+    let match;
+    while ((match = regex.exec(clean)) !== null) {
+      try {
+        const obj = JSON.parse(match[0]);
+        if (obj.titulo || obj.unidad_curricular) {
+          itemsCompletos.push(obj);
+        }
+      } catch {}
+    }
+    if (itemsCompletos.length > 0) {
+      return itemsCompletos;
+    }
+
+    throw new Error(
+      `La respuesta de la IA se cortó antes de terminar (había ${
+        clean.length
+      } chars). Intentá de nuevo — a veces la segunda vez funciona.`
+    );
   }
 }
 
