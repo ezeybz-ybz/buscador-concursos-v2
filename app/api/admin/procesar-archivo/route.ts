@@ -53,21 +53,27 @@ export async function POST(req: NextRequest) {
     }
 
     const texto  = formData.get('texto')  as string | null;
-    const base64 = formData.get('base64') as string | null;
     const motor  = (formData.get('motor') as string) || 'anthropic';
+    const archivoBlob = formData.get('archivo') as Blob | null;
+
+    // Convertir el archivo a base64 en el servidor (más confiable que hacerlo en el browser)
+    let base64: string | null = null;
+    if (archivoBlob) {
+      const buffer = await archivoBlob.arrayBuffer();
+      base64 = Buffer.from(buffer).toString('base64');
+    }
 
     if (motor === 'anthropic') {
-      // Motor: Claude Haiku — ideal para tablas complejas
       const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim();
       if (!anthropicKey) {
         return NextResponse.json(
-          { ok: false, error: 'Falta ANTHROPIC_API_KEY en las variables de entorno de Vercel. Agregala en Settings → Environment Variables.' },
+          { ok: false, error: 'Falta ANTHROPIC_API_KEY en Vercel (Settings → Environment Variables). Agregala y hacé Redeploy.' },
           { status: 500 }
         );
       }
       if (!base64) {
         return NextResponse.json(
-          { ok: false, error: 'No se recibió el archivo para procesar con Claude.' },
+          { ok: false, error: 'No se recibió el archivo PDF. Intentá de nuevo.' },
           { status: 400 }
         );
       }
@@ -75,17 +81,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, lista, fuente: 'anthropic' });
 
     } else {
-      // Motor: DeepSeek — texto plano
       const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim();
       if (!deepseekKey) {
         return NextResponse.json(
-          { ok: false, error: 'Falta DEEPSEEK_API_KEY en las variables de entorno de Vercel.' },
+          { ok: false, error: 'Falta DEEPSEEK_API_KEY en Vercel (Settings → Environment Variables).' },
           { status: 500 }
         );
       }
       if (!texto || texto.trim().length < 20) {
         return NextResponse.json(
-          { ok: false, error: 'El documento no tiene suficiente texto. Probá con Claude en vez de DeepSeek.' },
+          { ok: false, error: 'El documento no tiene suficiente texto para DeepSeek. Probá con Claude.' },
           { status: 400 }
         );
       }

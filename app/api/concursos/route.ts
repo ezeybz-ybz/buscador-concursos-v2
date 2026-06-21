@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   try {
     await ensureSchema();
-    const [brown, propios] = await Promise.all([getConcursosBrown(), getConcursosPropios()]);
+    // incluyeBorradores=false → el público no ve los borradores
+    const [brown, propios] = await Promise.all([getConcursosBrown(), getConcursosPropios(false)]);
     const todos = [...propios, ...brown];
     return NextResponse.json({ ok: true, total: todos.length, concursos: todos });
   } catch (e: any) {

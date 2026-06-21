@@ -126,6 +126,7 @@ export default function AdminPage() {
 
   // Motor de IA para procesar archivos
   const [motorIA, setMotorIA] = useState<'anthropic' | 'deepseek'>('anthropic');
+  const [guardandoBorradores, setGuardandoBorradores] = useState(false);
 
   useEffect(() => {
     verificarAuth();
@@ -205,29 +206,27 @@ export default function AdminPage() {
 
     setLeyendoArchivo(true);
     setListaPDF([]);
-    setMsgArchivo(`⏳ Leyendo ${esWord ? 'Word' : 'PDF'}...`);
+    setMsgArchivo('⏳ Preparando archivo...');
 
     try {
       const formData = new FormData();
+      formData.append('motor', motorIA);
 
       if (esWord) {
+        // Word: extraemos texto acá y lo mandamos como texto
         const texto = await extraerTextoWord(file);
         if (!texto.trim()) throw new Error('No se pudo extraer texto del archivo Word.');
         formData.append('texto', texto);
       } else {
-        // Para PDFs: mandamos SIEMPRE texto + base64
-        // El servidor elige la mejor estrategia (Anthropic para tablas, DeepSeek para texto simple)
-        setMsgArchivo('⏳ Preparando PDF...');
-        const [texto, base64] = await Promise.all([
-          extraerTextoPDF(file),
-          fileToBase64(file),
-        ]);
+        // PDF: mandamos el archivo crudo directamente — el servidor lo convierte a base64
+        // Esto evita el límite de tamaño de URL/body al pasar strings base64 enormes
+        formData.append('archivo', file, file.name);
+        // También mandamos el texto extraído como ayuda para DeepSeek
+        const texto = await extraerTextoPDF(file);
         formData.append('texto', texto || '[PDF sin texto extraíble]');
-        formData.append('base64', base64);
       }
 
       setMsgArchivo('⏳ Analizando con IA, esto puede tardar unos segundos...');
-      formData.append('motor', motorIA); // le decimos al servidor qué motor usar
       const res = await fetch('/api/admin/procesar-archivo', { method: 'POST', body: formData });
 
       // Siempre leer como texto primero para detectar errores HTML
@@ -244,12 +243,29 @@ export default function AdminPage() {
       const lista = Array.isArray(data.lista) ? data.lista : [];
       if (lista.length === 0) throw new Error('No se detectaron concursos en el archivo.');
 
-      setListaPDF(lista);
       if (lista.length === 1) {
+        // Un solo concurso → lo carga directo en el formulario como antes
         aplicarDatos(lista[0]);
+        setListaPDF([]);
         setMsgArchivo('✅ Concurso cargado en el formulario. Revisá y guardá.');
       } else {
-        setMsgArchivo(`✅ ${lista.length} concursos detectados. Hacé clic en "Cargar →" para cargar cada uno.`);
+        // Múltiples concursos → los guarda TODOS como borradores de una
+        // No gasta más créditos de IA ni borra lo que ya había cargado
+        setGuardandoBorradores(true);
+        setMsgArchivo(`⏳ Guardando ${lista.length} concursos como borradores...`);
+        const res2 = await fetch('/api/admin/borradores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lista }),
+        });
+        const data2 = await res2.json();
+        setGuardandoBorradores(false);
+        if (!data2.ok) throw new Error('Error guardando borradores: ' + data2.error);
+        setListaPDF([]);
+        await cargarLista(); // actualiza la lista para mostrar los borradores
+        setMsgArchivo(
+          `✅ ${data2.guardados} borradores guardados. Aparecen en la lista de abajo marcados como "Borrador". Editá y publicá cada uno cuando estén listos.`
+        );
       }
     } catch (err: any) {
       setMsgArchivo('❌ ' + err.message);
@@ -337,6 +353,12 @@ export default function AdminPage() {
     if (!confirm(`¿Borrar "${item.titulo}"? Esta acción no se puede deshacer.`)) return;
     const id = String(item.id).replace('propio-', '');
     await fetch('/api/admin/concursos?id=' + id, { method: 'DELETE' });
+    cargarLista();
+  }
+
+  async function publicar(item: any) {
+    const id = String(item.id).replace('propio-', '');
+    await fetch('/api/admin/borradores?id=' + id, { method: 'PUT' });
     cargarLista();
   }
 
@@ -647,14 +669,21 @@ export default function AdminPage() {
           {listaFiltrada.map(item => (
             <div key={item.id}
               className={`border rounded-xl p-4 flex items-start justify-between gap-3 transition
-                ${editandoId === parseInt(String(item.id).replace('propio-', ''))
-                  ? 'border-brand-400 bg-brand-50'
-                  : 'border-slate-200 hover:border-slate-300 bg-white'
+                ${item.borrador
+                  ? 'border-amber-200 bg-amber-50'
+                  : editandoId === parseInt(String(item.id).replace('propio-', ''))
+                    ? 'border-brand-400 bg-brand-50'
+                    : 'border-slate-200 hover:border-slate-300 bg-white'
                 }`}>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap mb-1">
                   <p className="text-sm font-bold text-slate-800">{item.titulo}</p>
-                  {item.origen === 'automatico' && (
+                  {item.borrador && (
+                    <span className="text-[10px] bg-amber-100 text-amber-700 border border-amber-300 rounded-full px-2 py-0.5 shrink-0 font-bold">
+                      ✏️ Borrador
+                    </span>
+                  )}
+                  {item.origen === 'automatico' && !item.borrador && (
                     <span className="text-[10px] bg-teal-50 text-teal-600 border border-teal-200 rounded-full px-2 py-0.5 shrink-0">🤖 Auto</span>
                   )}
                 </div>
@@ -670,6 +699,12 @@ export default function AdminPage() {
                 )}
               </div>
               <div className="flex flex-col gap-2 shrink-0">
+                {item.borrador && (
+                  <button onClick={() => publicar(item)}
+                    className="text-xs font-bold px-4 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 transition">
+                    🌐 Publicar
+                  </button>
+                )}
                 <button onClick={() => editar(item)}
                   className="text-xs font-bold px-4 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 transition">
                   ✏️ Editar
